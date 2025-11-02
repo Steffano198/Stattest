@@ -1,0 +1,285 @@
+//@version=6
+indicator("Steffano Continuation Suite — Trend Continuations (v1.1)", overlay=true, max_lines_count=500, max_boxes_count=300, max_labels_count=300)
+
+// === Inputs ===
+emaLenFast = input.int(20, "EMA Fast", minval=1)
+emaLenMid  = input.int(50, "EMA Mid",  minval=1)
+emaLenSlow = input.int(200, "EMA Slow", minval=1)
+
+atrLen   = input.int(14, "ATR Length", minval=1)
+atrMult  = input.float(2.0, "ATR Multiplier (ProPlus band)", step=0.1)
+
+phLen    = input.int(5,  "Pivot High/Low Left Bars", minval=1)
+plLen    = input.int(5,  "Pivot High/Low Right Bars", minval=1)
+
+useFib382 = input.bool(true,  "Use Fib 0.382")
+useFib50  = input.bool(true,  "Use Fib 0.500")
+useFib618 = input.bool(true,  "Use Fib 0.618 (Golden)")
+
+useFVG    = input.bool(true,  "Detect Fair Value Gaps (FVG)")
+maxFVG    = input.int(6,    "Max FVG boxes to keep", minval=0, maxval=50)
+
+htf       = input.timeframe("15", "Exit/Scale-Out Timeframe (e.g. 15 for 5→15m)")
+
+showSignals = input.bool(true,  "Show Entry/Exit Signals")
+showLabels  = input.bool(true,  "Show Labels")
+
+// === Core calculations ===
+emaFast = ta.ema(close, emaLenFast)
+emaMid  = ta.ema(close, emaLenMid)
+emaSlow = ta.ema(close, emaLenSlow)
+
+plot(emaFast, color=color.new(color.teal, 0),  linewidth=2, title="EMA Fast")
+plot(emaMid,  color=color.new(color.orange, 0),linewidth=2, title="EMA Mid")
+plot(emaSlow, color=color.new(color.purple, 0),linewidth=2, title="EMA Slow")
+
+trendBull = emaFast > emaMid and emaMid > emaSlow
+trendBear = emaFast < emaMid and emaMid < emaSlow
+
+// Break of structure (simple): new HH/LL vs last pivot
+ph = ta.pivothigh(high, phLen, plLen)
+pl = ta.pivotlow(low,  phLen, plLen)
+var float lastPH = na
+var float lastPL = na
+if not na(ph)
+    lastPH := ph
+if not na(pl)
+    lastPL := pl
+bosUp   = not na(lastPH) and close > lastPH
+bosDown = not na(lastPL) and close < lastPL
+
+// === ProPlus-like Bands (ATR-based valuation cloud) ===
+_basis = ta.ema(close, emaLenFast)
+_atr   = ta.atr(atrLen)
+upper  = _basis + _atr * atrMult
+lower  = _basis - _atr * atrMult
+
+// Background highlights: undervalued / overvalued
+isUnderval = close < lower
+isOverval  = close > upper
+bgcolor(isUnderval ? color.new(color.green, 92) : na)
+bgcolor(isOverval  ? color.new(color.red,   92) : na)
+plot(upper, "ProPlus Upper", color=color.new(color.red, 60))
+plot(lower, "ProPlus Lower", color=color.new(color.green, 60))
+
+// === HTF exit/scale-out signal (use same band logic on HTF) ===
+htfClose = request.security(syminfo.tickerid, htf, close)
+htfBasis = request.security(syminfo.tickerid, htf, ta.ema(close, emaLenFast))
+htfATR   = request.security(syminfo.tickerid, htf, ta.atr(atrLen))
+htfUpper = htfBasis + htfATR * atrMult
+htfLower = htfBasis - htfATR * atrMult
+htfOver  = htfClose > htfUpper
+htfUnder = htfClose < htfLower
+
+plotshape(showSignals and htfOver, title="HTF Overvalued (Scale Out)", style=shape.triangledown, size=size.tiny, color=color.red, location=location.abovebar, text="HTF TP")
+plotshape(showSignals and htfUnder, title="HTF Undervalued (Scale Out Short)", style=shape.triangleup, size=size.tiny, color=color.green, location=location.belowbar, text="HTF TP")
+
+// === Swing anchors for Fibonacci (auto)
+var float fibHigh = na
+var float fibLow  = na
+
+if trendBull
+    if not na(ph)
+        fibHigh := ph
+    if not na(pl)
+        fibLow := pl
+else if trendBear
+    if not na(pl)
+        fibLow := pl
+    if not na(ph)
+        fibHigh := ph
+
+rangeOk = not na(fibHigh) and not na(fibLow) and fibHigh != fibLow
+
+float fibTop   = na
+float fibBottom= na
+if rangeOk
+    bool bullRange = fibHigh > fibLow
+    fibTop    := bullRange ? fibHigh : fibLow
+    fibBottom := bullRange ? fibLow  : fibHigh
+
+f_fib(val) => rangeOk ? (fibTop - (fibTop - fibBottom) * val) : na
+fib382 = useFib382 ? f_fib(0.382) : na
+fib50  = useFib50  ? f_fib(0.5)   : na
+fib618 = useFib618 ? f_fib(0.618) : na
+
+// Draw the most recent fib set as lines (no chained setters)
+var line l382 = na
+var line l50  = na
+var line l618 = na
+var line lTop = na
+var line lBot = na
+
+newSession = ta.change(time("D")) != 0
+if (barstate.isfirst or newSession)
+    if not na(l382)
+        line.delete(l382)
+    if not na(l50)
+        line.delete(l50)
+    if not na(l618)
+        line.delete(l618)
+    if not na(lTop)
+        line.delete(lTop)
+    if not na(lBot)
+        line.delete(lBot)
+    l382 := na
+    l50  := na
+    l618 := na
+    lTop := na
+    lBot := na
+
+if rangeOk
+    if na(lTop)
+        lTop := line.new(bar_index-1, fibTop, bar_index, fibTop, extend=extend.right, color=color.new(color.gray, 70))
+    else
+        line.set_xy1(lTop, bar_index-1, fibTop)
+        line.set_xy2(lTop, bar_index,   fibTop)
+    if na(lBot)
+        lBot := line.new(bar_index-1, fibBottom, bar_index, fibBottom, extend=extend.right, color=color.new(color.gray, 70))
+    else
+        line.set_xy1(lBot, bar_index-1, fibBottom)
+        line.set_xy2(lBot, bar_index,   fibBottom)
+    if useFib382 and not na(fib382)
+        if na(l382)
+            l382 := line.new(bar_index-1, fib382, bar_index, fib382, extend=extend.right, color=color.new(color.blue, 0))
+        else
+            line.set_xy1(l382, bar_index-1, fib382)
+            line.set_xy2(l382, bar_index,   fib382)
+    if useFib50 and not na(fib50)
+        if na(l50)
+            l50 := line.new(bar_index-1, fib50, bar_index, fib50, extend=extend.right, color=color.new(color.blue, 20))
+        else
+            line.set_xy1(l50, bar_index-1, fib50)
+            line.set_xy2(l50, bar_index,   fib50)
+    if useFib618 and not na(fib618)
+        if na(l618)
+            l618 := line.new(bar_index-1, fib618, bar_index, fib618, extend=extend.right, color=color.new(color.blue, 0))
+        else
+            line.set_xy1(l618, bar_index-1, fib618)
+            line.set_xy2(l618, bar_index,   fib618)
+
+// Helper: value inside fib zone 0.382–0.618
+inFibZoneBull = rangeOk and close >= nz(fib618, -1e10) and close <= nz(fib382, 1e10) and fibTop > fibBottom
+inFibZoneBear = rangeOk and close <= nz(fib382, 1e10) and close >= nz(fib618, -1e10) and fibTop < fibBottom
+
+// === Fair Value Gaps (ICT-style 3-candle) ===
+// We maintain a parallel boolean array to track "active" status (avoid box.get_bgcolor not available)
+var box[]   fvgBullBoxes = array.new_box()
+var bool[]  fvgBullActive = array.new_bool()
+var box[]   fvgBearBoxes = array.new_box()
+var bool[]  fvgBearActive = array.new_bool()
+
+makeBox(_bull, y1, y2) =>
+    b = box.new(left=bar_index-1, top=y2, right=bar_index, bottom=y1, bgcolor=color.new(_bull ? color.green : color.red, 88), border_color=color.new(_bull ? color.green : color.red, 0))
+    b
+
+// Detect new FVG boxes
+if useFVG and bar_index > 2
+    // Bullish
+    if low > high[2]
+        b = makeBox(true, high[2], low)
+        array.push(fvgBullBoxes, b)
+        array.push(fvgBullActive, true)
+    // Bearish
+    if high < low[2]
+        b = makeBox(false, high, low[2])
+        array.push(fvgBearBoxes, b)
+        array.push(fvgBearActive, true)
+
+// Extend and prune FVG boxes, and mark as filled/inactive when price trades through beyond midpoint
+processFVG(arrBoxes, arrActive, _bull) =>
+    for i = 0 to array.size(arrBoxes) - 1
+        bx = array.get(arrBoxes, i)
+        // Extend right each bar
+        box.set_right(bx, bar_index)
+        top = box.get_top(bx)
+        bot = box.get_bottom(bx)
+        mid = (top + bot) / 2.0
+        // Invalidation: close crosses beyond far side OR closes beyond mid → mark inactive & fade
+        invalid = (_bull and (close < bot or close < mid)) or (not _bull and (close > top or close > mid))
+        if invalid
+            array.set(arrActive, i, false)
+            box.set_bgcolor(bx, color.new(color.gray, 90))
+
+// Keep arrays capped (sync active flags)
+capBoxes(arrBoxes, arrActive) =>
+    while array.size(arrBoxes) > maxFVG
+        bx = array.shift(arrBoxes)
+        _ = array.shift(arrActive)
+        box.delete(bx)
+
+if useFVG
+    processFVG(fvgBullBoxes, fvgBullActive, true)
+    processFVG(fvgBearBoxes, fvgBearActive, false)
+    capBoxes(fvgBullBoxes, fvgBullActive)
+    capBoxes(fvgBearBoxes, fvgBearActive)
+
+// Check overlap between last ACTIVE FVG and fib zone
+getLastActiveRange(arrBoxes, arrActive) =>
+    float top = na
+    float bot = na
+    for i = array.size(arrBoxes) - 1 to 0
+        if array.get(arrActive, i)
+            bx = array.get(arrBoxes, i)
+            top := box.get_top(bx)
+            bot := box.get_bottom(bx)
+            break
+    [top, bot]
+
+var float bTopBull = na
+var float bBotBull = na
+var float bTopBear = na
+var float bBotBear = na
+if useFVG
+    [bTopBull, bBotBull] := getLastActiveRange(fvgBullBoxes, fvgBullActive)
+    [bTopBear, bBotBear] := getLastActiveRange(fvgBearBoxes, fvgBearActive)
+
+// Overlap logic: FVG intersects fib zone bounds
+fibMin = math.min(nz(fib382, na), nz(fib618, na))
+fibMax = math.max(nz(fib382, na), nz(fib618, na))
+
+bullOverlap = useFVG and rangeOk and not na(bTopBull) and not na(fibMin) and (bBotBull <= fibMax and bTopBull >= fibMin)
+bearOverlap = useFVG and rangeOk and not na(bTopBear) and not na(fibMin) and (bBotBear <= fibMax and bTopBear >= fibMin)
+
+// === Unicorn setup: EMAs aligned + in fib zone + FVG overlap + near 200EMA ===
+near200Pct = input.float(0.25, "Unicorn: distance to 200EMA (% of ATR)", step=0.05)
+near200 = math.abs(close - emaSlow) <= _atr * near200Pct
+
+bullEntry = showSignals and trendBull and inFibZoneBull and isUnderval and (not useFVG or bullOverlap)
+bearEntry = showSignals and trendBear and inFibZoneBear and isOverval  and (not useFVG or bearOverlap)
+
+bullUnicorn = bullEntry and near200
+bearUnicorn = bearEntry and near200
+
+plotshape(bullEntry, title="Bullish Entry", style=shape.circle, size=size.tiny, color=color.new(color.green, 0), location=location.belowbar, text="LONG")
+plotshape(bearEntry, title="Bearish Entry", style=shape.circle, size=size.tiny, color=color.new(color.red, 0), location=location.abovebar, text="SHORT")
+plotshape(bullUnicorn, title="Bull Unicorn", style=shape.labelup, color=color.new(color.green, 0), text="🦄 LONG", location=location.belowbar, size=size.small, textcolor=color.white)
+plotshape(bearUnicorn, title="Bear Unicorn", style=shape.labeldown, color=color.new(color.red, 0), text="🦄 SHORT", location=location.abovebar, size=size.small, textcolor=color.white)
+
+// Optional labels with context
+if showLabels and (bullEntry or bearEntry)
+    rrTxt = "Trend:" + (bullEntry ? "Bull" : "Bear") + "
+FibZone: 0.382–0.618
+ProPlus: " + (isUnderval or isOverval ? "hit" : "no") + "
+FVG overlap: " + (bullEntry ? str.tostring(bullOverlap) : str.tostring(bearOverlap))
+    label.new(bar_index, close, rrTxt, style=label.style_none, textcolor=color.white, bgcolor=color.new(color.black, 60))
+
+// === Alerts ===
+alertcondition(bullEntry,  "Bullish Entry (Continuation)", "Bullish continuation: EMA aligned, Fib zone, undervalued, FVG overlap (if enabled)")
+alertcondition(bearEntry,  "Bearish Entry (Continuation)", "Bearish continuation: EMA aligned, Fib zone, overvalued, FVG overlap (if enabled)")
+alertcondition(bullUnicorn, "Unicorn LONG", "UNICORN LONG: all confluences incl. near 200EMA")
+alertcondition(bearUnicorn, "Unicorn SHORT", "UNICORN SHORT: all confluences incl. near 200EMA")
+alertcondition(htfOver,    "HTF Scale-Out (Long TP)", "Higher TF overvalued → consider scaling out LONG")
+alertcondition(htfUnder,   "HTF Scale-Out (Short TP)", "Higher TF undervalued → consider scaling out SHORT")
+
+// === Utility: status panel === (fixed row/column indices)
+showPanel = input.bool(true, "Show Status Panel")
+if showPanel
+    var table t = table.new(position.top_right, 1, 6, frame_color=color.new(color.gray, 80), frame_width=1)
+    if barstate.islast
+        table.cell(t, 0, 0, "Trend: " + (trendBull ? "Bull" : trendBear ? "Bear" : "Mixed"), text_color= trendBull ? color.lime : trendBear ? color.red : color.yellow, bgcolor=color.new(color.black, 0))
+        table.cell(t, 0, 1, "BOS: " + (bosUp ? "Up" : bosDown ? "Down" : "—"))
+        table.cell(t, 0, 2, "Fib set: " + (rangeOk ? "OK" : "—"))
+        table.cell(t, 0, 3, "FVG overlap: " + (bullOverlap or bearOverlap ? "Yes" : "No"))
+        table.cell(t, 0, 4, "ProPlus: " + (isUnderval ? "Underval" : isOverval ? "Overval" : "Neutral"))
+        table.cell(t, 0, 5, "Unicorn: " + (bullUnicorn or bearUnicorn ? "YES" : "no"), text_color=(bullUnicorn or bearUnicorn ? color.lime : color.silver))
